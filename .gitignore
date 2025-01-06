@@ -1,0 +1,15 @@
+.ipynb_checkpoints/
+.venv/
+.env
+notebooks/.ipynb_checkpoints/
+notebooks/.env
+notebooks/.DS_Store
+.DS_Store
+*.in
+*.csv
+datasets.txt
+__pycache__
+venv
+*.json
+flask
+data
