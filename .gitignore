@@ -9,7 +9,5 @@ notebooks/.DS_Store
 *.csv
 datasets.txt
 __pycache__
-venv
 *.json
-flask
 data
