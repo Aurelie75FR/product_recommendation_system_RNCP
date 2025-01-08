@@ -2,133 +2,167 @@
 from flask import Flask, jsonify, request
 from config import Config
 from backend import BigQueryClient
-import os
 import logging
+import pandas as pd
+import numpy as np
 
-app = Flask(__name__)
-app.config.from_object(Config)
-db = BigQueryClient()
+
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+app = Flask(__name__)
+app.config.from_object(Config)
+db = BigQueryClient()
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Point de terminaison pour vérifier la santé de l'API"""
     try:
-        logger.info("Performing health check...")
+        # Vérifie à la fois BigQuery et le modèle de recommandation
+        db.execute_query("SELECT 1")
+        model_status = hasattr(db.recommender, 'product_data') and db.recommender.product_data is not None
         
-        # Test de connexion à BigQuery
-        db.test_connection()
-        
-        response = {
+        return jsonify({
             "status": "healthy",
             "database": "connected",
-            "config": {
-                "project_id": Config.PROJECT_ID,
-                "dataset_id": Config.DATASET_ID,
-                "credentials_file": os.path.basename(Config.GOOGLE_APPLICATION_CREDENTIALS)
-            }
-        }
-        return jsonify(response), 200
+            "model": "loaded" if model_status else "not loaded"
+        }), 200
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return jsonify({
             "status": "unhealthy",
-            "error": str(e),
-            "config": {
-                "project_id": Config.PROJECT_ID,
-                "dataset_id": Config.DATASET_ID,
-                "credentials_file": os.path.basename(Config.GOOGLE_APPLICATION_CREDENTIALS)
-            }
+            "error": str(e)
         }), 500
 
 @app.route('/api/products/popular', methods=['GET'])
 def get_popular_products():
-    """Récupérer les produits les plus populaires"""
+    """Récupère les produits les plus populaires"""
     try:
         limit = request.args.get('limit', default=10, type=int)
-        logger.info(f"Fetching {limit} popular products...")
+        min_rating = request.args.get('min_rating', default=4.0, type=float)
         
-        results = db.get_popular_products(limit)
-        products = [dict(row) for row in results]
-        
-        logger.info(f"Successfully fetched {len(products)} products")
-        return jsonify({"products": products}), 200
-        
-    except TimeoutError:
-        error_msg = "Request timed out"
-        logger.error(error_msg)
-        return jsonify({"error": error_msg}), 504
-    except Exception as e:
-        error_msg = f"Error fetching popular products: {str(e)}"
-        logger.error(error_msg)
-        return jsonify({"error": error_msg}), 500
+        # Configuration des préférences par défaut
+        user_prefs = {
+            'categories': list(db.recommender.product_data['categoryName'].unique()),  # toutes les catégories
+            'min_price': 0,
+            'max_price': float('inf'),
+            'min_rating': min_rating
+        }
 
-@app.route('/api/products/search', methods=['GET'])
-def search_products():
-    """Rechercher des produits"""
-    try:
-        search_term = request.args.get('q', '')
-        category_id = request.args.get('category_id')
-        limit = request.args.get('limit', default=10, type=int)
+        result = db.recommender.get_personalized_recommendations(user_prefs, n=limit)
         
-        if not search_term:
-            return jsonify({"error": "Search term is required"}), 400
+        if result.empty:
+            return jsonify({"error": "No products found"}), 404
             
-        results = db.search_products(search_term, category_id, limit)
-        products = [dict(row) for row in results]
+        # Convertir le DataFrame en dictionnaire
+        products = result.to_dict('records')
+        
         return jsonify({
-            "query": search_term,
-            "category_id": category_id,
             "count": len(products),
             "products": products
         }), 200
+        
     except Exception as e:
-        logger.error(f"Error searching products: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/products/<asin>', methods=['GET'])
-def get_product(asin):
-    """Récupérer les détails d'un produit"""
-    try:
-        results = db.get_product_by_id(asin)
-        products = [dict(row) for row in results]
-        if not products:
-            return jsonify({"error": "Product not found"}), 404
-        return jsonify({"product": products[0]}), 200
-    except Exception as e:
-        logger.error(f"Error fetching product {asin}: {str(e)}")
+        logger.error(f"Error fetching popular products: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/products/<asin>/recommendations', methods=['GET'])
 def get_product_recommendations(asin):
-    """Récupérer les recommandations pour un produit"""
+    """Recommandations de produits similaires"""
     try:
         limit = request.args.get('limit', default=5, type=int)
-        results = db.get_similar_products(asin, limit)
-        recommendations = [dict(row) for row in results]
+        
+        recommendations = db.recommender.get_similar_products(asin, n=limit)
+        
+        if recommendations.empty:
+            return jsonify({"error": "No recommendations found"}), 404
+            
+        products = recommendations.to_dict('records')
         return jsonify({
             "asin": asin,
-            "count": len(recommendations),
-            "recommendations": recommendations
+            "recommendations": products,
+            "count": len(products)
         }), 200
+        
     except Exception as e:
-        logger.error(f"Error fetching recommendations for {asin}: {str(e)}")
+        logger.error(f"Error in get_product_recommendations: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/categories/<category_id>', methods=['GET'])
-def get_category_analytics(category_id):
-    """Récupérer les statistiques d'une catégorie"""
+@app.route('/api/categories/<category_id>/recommendations', methods=['GET'])
+def get_category_recommendations(category_id):
+    """Recommandations par catégorie"""
     try:
-        results = db.get_category_stats(category_id)
-        stats = [dict(row) for row in results]
-        if not stats:
-            return jsonify({"error": "Category not found"}), 404
-        return jsonify({"category_stats": stats[0]}), 200
+        limit = request.args.get('limit', default=5, type=int)
+        recommendations = db.get_category_recommendations(category_id, limit)
+        
+        if recommendations.empty:
+            return jsonify({"error": "No recommendations found"}), 404
+            
+        products = recommendations.to_dict('records')
+        return jsonify({
+            "category_id": category_id,
+            "recommendations": products,
+            "count": len(products)
+        }), 200
+        
     except Exception as e:
-        logger.error(f"Error fetching category stats for {category_id}: {str(e)}")
+        logger.error(f"Error in get_category_recommendations: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/products/search', methods=['GET'])
+def search_products():
+    """Recherche de produits avec recommandations personnalisées"""
+    try:
+        query = request.args.get('q', '')
+        category = request.args.get('category', '')
+        min_price = request.args.get('min_price', default=0, type=float)
+        max_price = request.args.get('max_price', default=float('inf'), type=float)
+        min_rating = request.args.get('min_rating', default=4.0, type=float)
+        limit = request.args.get('limit', default=10, type=int)
+        
+        if not query and not category:
+            return jsonify({"error": "Search query or category required"}), 400
+            
+        # Filtrer les produits selon les critères
+        mask = pd.Series(True, index=db.recommender.product_data.index)
+        
+        if query:
+            mask &= db.recommender.product_data['title'].str.contains(query, case=False)
+        if category:
+            mask &= db.recommender.product_data['categoryName'] == category
+            
+        user_prefs = {
+            'categories': [category] if category else db.recommender.product_data['categoryName'].unique(),
+            'min_price': min_price,
+            'max_price': max_price,
+            'min_rating': min_rating
+        }
+        
+        filtered_data = db.recommender.product_data[mask].copy()
+        
+        if filtered_data.empty:
+            return jsonify({"error": "No products found"}), 404
+            
+        # Calculer les scores pour le tri
+        filtered_data['search_score'] = (
+            filtered_data['stars'] / 5 * 0.4 +
+            (np.log1p(filtered_data['reviews']) / 
+             np.log1p(filtered_data['reviews'].max())) * 0.6
+        )
+        
+        results = filtered_data.nlargest(limit, 'search_score')
+        products = results.to_dict('records')
+        
+        return jsonify({
+            "query": query,
+            "category": category,
+            "products": products,
+            "count": len(products)
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in search_products: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

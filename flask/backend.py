@@ -1,7 +1,16 @@
+#librairies
+import os
+import logging
+import pandas as pd
+import numpy as np
+
 from google.cloud import bigquery
 from config import Config
-import logging
-import os
+
+# ML model
+from utils.recommender import AmazonRecommender
+
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +29,8 @@ class BigQueryClient:
             self.client = bigquery.Client()
             self.project_id = Config.PROJECT_ID
             self.dataset_id = Config.DATASET_ID
+            self.recommender = AmazonRecommender()
+            self._init_recommender()
             
             logger.info(f"BigQuery client initialized with project: {self.project_id}, dataset: {self.dataset_id}")
             
@@ -67,164 +78,76 @@ class BigQueryClient:
             logger.error(f"Error executing query: {str(e)}")
             raise
 
-    def get_product_by_id(self, asin):
-        """Récupère un produit par son ASIN"""
-        query = f"""
-        SELECT 
-            p.asin,
-            p.title,
-            p.img_url,
-            p.product_url,
-            p.price,
-            pf.stars,
-            pf.reviews,
-            pf.popularity_score
-        FROM `{self.project_id}.{self.dataset_id}.ProductFeatures` pf
-        JOIN `{self.project_id}.{self.dataset_id}.CleanProducts` p ON pf.asin = p.asin
-        WHERE p.asin = @asin
-        """
-        params = [bigquery.ScalarQueryParameter("asin", "STRING", asin)]
-        return self.execute_query(query, params)
-    
-    def search_products(self, search_term, category_id=None, limit=10):
-        """Recherche des produits par terme et catégorie"""
-        conditions = ["LOWER(p.title) LIKE CONCAT('%', LOWER(@search_term), '%')"]
-        params = [
-            bigquery.ScalarQueryParameter("search_term", "STRING", search_term),
-            bigquery.ScalarQueryParameter("limit", "INT64", limit)
-        ]
-        
-        if category_id:
-            conditions.append("p.category_id = @category_id")
-            params.append(bigquery.ScalarQueryParameter("category_id", "STRING", category_id))
-
-        query = f"""
-        SELECT 
-            p.asin,
-            p.title,
-            p.img_url,
-            p.product_url,
-            p.price,
-            pf.stars,
-            pf.reviews,
-            pf.popularity_score,
-            pf.value_for_money,
-            pf.review_segment,
-            p.price_category
-        FROM `{self.project_id}.{self.dataset_id}.ProductFeatures` pf
-        JOIN `{self.project_id}.{self.dataset_id}.CleanProducts` p 
-            ON pf.asin = p.asin
-        WHERE {' AND '.join(conditions)}
-        ORDER BY pf.popularity_score DESC
-        LIMIT @limit
-        """
-        return self.execute_query(query, params)
-
-    def get_popular_products(self, limit=10):
-        """Récupère les produits les plus populaires"""
-        query = f"""
-        SELECT 
-            p.asin,
-            p.title,
-            p.img_url,
-            p.product_url,
-            p.price,
-            pf.stars,
-            pf.reviews,
-            pf.popularity_score,
-            pf.value_for_money,
-            pf.review_segment,
-            p.price_category
-        FROM `{self.project_id}.{self.dataset_id}.ProductFeatures` pf
-        JOIN `{self.project_id}.{self.dataset_id}.CleanProducts` p 
-            ON pf.asin = p.asin
-        ORDER BY pf.popularity_score DESC
-        LIMIT @limit
-        """
-        params = [bigquery.ScalarQueryParameter("limit", "INT64", limit)]
-        return self.execute_query(query, params)
-
-
-    def get_popular_products(self, limit=10):
-        """Récupère les produits les plus populaires avec diversité maximale"""
-        query = f"""
-        WITH ProductsWithBrands AS (
+    def _init_recommender(self):
+        """Initialize recommender system with required columns"""
+        try:
+            query = f"""
             SELECT 
                 p.asin,
                 p.title,
                 p.img_url,
                 p.product_url,
                 p.price,
-                p.category_id,
-                c.category_name,
+                c.category_name as categoryName,
                 pf.stars,
                 pf.reviews,
                 pf.popularity_score,
-                pf.value_for_money,
-                pf.review_segment,
-                p.price_category,
-                -- Extrait la marque du titre
-                REGEXP_EXTRACT(LOWER(p.title), r'^([a-zA-Z\s]+)') as brand,
-                -- Rang dans la catégorie
-                ROW_NUMBER() OVER (
-                    PARTITION BY c.category_name
-                    ORDER BY pf.popularity_score DESC, pf.value_for_money DESC
-                ) as category_rank,
-                -- Rang par marque
-                ROW_NUMBER() OVER (
-                    PARTITION BY REGEXP_EXTRACT(LOWER(p.title), r'^([a-zA-Z\s]+)')
-                    ORDER BY pf.popularity_score DESC, pf.value_for_money DESC
-                ) as brand_rank
+                pf.value_for_money
             FROM `{self.project_id}.{self.dataset_id}.ProductFeatures` pf
             JOIN `{self.project_id}.{self.dataset_id}.CleanProducts` p ON pf.asin = p.asin
             JOIN `{self.project_id}.{self.dataset_id}.Categories` c ON p.category_id = c.category_id
-            WHERE 
-                pf.reviews > 1000
-                AND pf.stars >= 4.0
-                -- Exclure les catégories mal attribuées pour les piles
-                AND NOT (
-                    LOWER(p.title) LIKE '%batteries%' 
-                    AND c.category_name != 'Household Batteries, Chargers & Accessories'
-                )
-        )
-        SELECT 
-            asin,
-            title,
-            img_url,
-            product_url,
-            price,
-            stars,
-            reviews,
-            popularity_score,
-            value_for_money,
-            review_segment,
-            price_category,
-            category_name
-        FROM ProductsWithBrands
-        WHERE 
-            category_rank = 1  -- Meilleur produit de chaque catégorie
-            AND brand_rank = 1  -- Meilleur produit de chaque marque
-        ORDER BY popularity_score DESC, value_for_money DESC
-        LIMIT @limit
-        """
-        params = [bigquery.ScalarQueryParameter("limit", "INT64", limit)]
-        return self.execute_query(query, params)
-    
+            WHERE pf.reviews > 100
+            """
+            result = self.execute_query(query)
+            
+            # Convertir en DataFrame
+            df = pd.DataFrame([dict(row) for row in result])
+            df.set_index('asin', inplace=True)
+            
+            print(f"Loaded {len(df)} products with columns: {df.columns.tolist()}")
+            
+            # Entraîner le modèle
+            self.recommender.fit(df)
+            logger.info("Recommender model initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Error initializing recommender: {str(e)}")
+            raise
 
-    def get_category_analytics(self, category_id):
-        """Récupère les statistiques d'une catégorie"""
+    def get_popular_products(self, limit=10):
+        """Récupère les produits les plus populaires"""
+        # Utiliser les préférences par défaut pour obtenir des recommandations diversifiées
+        user_prefs = {
+            'categories': self.recommender.product_data['categoryName'].unique(),
+            'min_price': 0,
+            'max_price': float('inf'),
+            'min_rating': 4.0
+        }
+        recommendations = self.recommender.get_personalized_recommendations(
+            user_prefs, 
+            n=limit
+        )
+        return recommendations.reset_index()
+
+    def get_similar_products(self, asin, limit=5):
+        """Trouve des produits similaires"""
+        recommendations = self.recommender.get_similar_products(asin, n=limit)
+        return recommendations.reset_index()
+
+    def get_category_recommendations(self, category_id, limit=5):
+        """Récupère les recommandations par catégorie"""
+        # D'abord obtenir le nom de la catégorie
         query = f"""
-        SELECT 
-            category_id,
-            product_count,
-            avg_popularity,
-            avg_value_for_money,
-            avg_stars,
-            avg_price,
-            avg_reviews,
-            bestseller_count
-        FROM `{self.project_id}.{self.dataset_id}.ProductAnalytics`
+        SELECT category_name 
+        FROM `{self.project_id}.{self.dataset_id}.Categories`
         WHERE category_id = @category_id
         """
         params = [bigquery.ScalarQueryParameter("category_id", "STRING", category_id)]
-        return self.execute_query(query, params)
+        result = self.execute_query(query, params)
+        category_name = next(result).category_name
+        
+        recommendations = self.recommender.get_category_recommendations(
+            category_name, 
+            n=limit
+        )
+        return recommendations.reset_index()
