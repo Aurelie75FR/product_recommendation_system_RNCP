@@ -45,7 +45,7 @@ class AmazonRecommender:
         """
         Creates features with adaptive weightings
         """
-        feature_df = pd.DataFrame(index=df.index)
+        feature_df = pd.DataFrame()
         
         # Standardised numerical features
         feature_df['price_norm'] = np.log1p(df['price']) / np.log1p(df['price'].max())
@@ -58,8 +58,8 @@ class AmazonRecommender:
         
         # Segmentation of ratings
         rating_cats = pd.cut(df['stars'], 
-                           bins=[0, 3.5, 4.0, 4.5, 5.0], 
-                           labels=['low', 'medium', 'high', 'very_high'])
+                            bins=[0, 3.5, 4.0, 4.5, 5.0], 
+                            labels=['low', 'medium', 'high', 'very_high'])
         rating_dummies = pd.get_dummies(rating_cats, prefix='rating')
         
         # Main categories
@@ -77,82 +77,35 @@ class AmazonRecommender:
         
         self.product_features = pd.DataFrame(
             self.scaler.fit_transform(self.product_features),
-            columns=self.product_features.columns, 
-            index=df.index
+            columns=self.product_features.columns
         )
         
         return self.product_features
 
-    # def get_similar_products(self, product_id, n=5):
-    #     """Version améliorée avec plus de diversité"""
-    #     try:
-    #         original = self.product_data.loc[product_id]
-            
-    #         similar_products = self.product_data[
-    #             (self.product_data.index != product_id) &
-    #             (~self.product_data['title'].str.lower().str.contains(
-    #                 original['title'].lower().split('|')[0].strip()
-    #             ))
-    #         ].copy()
-            
-    #         # Amélioration des scores de similarité
-    #         similar_products['category_similarity'] = similar_products['categoryName'].apply(
-    #             lambda x: self._calculate_category_similarity(x, original['categoryName'])
-    #         )
-            
-    #         similar_products['price_ratio'] = similar_products['price'] / original['price']
-    #         similar_products['price_score'] = 1 - np.abs(np.log(similar_products['price_ratio']))
-    #         similar_products['brand'] = similar_products['title'].str.extract(r'^([A-Za-z]+)')
-            
-    #         # Filtrer les produits trop similaires
-    #         similar_products = similar_products[
-    #             similar_products['brand'] != original['title'].split()[0]
-    #         ]
-            
-    #         # Score final avec plus de composantes
-    #         similar_products['final_score'] = (
-    #             similar_products['category_similarity'] * 0.3 +
-    #             similar_products['price_score'].clip(0, 1) * 0.2 +
-    #             (similar_products['stars'] / 5) * 0.2 +
-    #             (np.log1p(similar_products['reviews']) / 
-    #             np.log1p(similar_products['reviews'].max())) * 0.3
-    #         ).clip(0, 1)
-            
-    #         # Sélection avec diversité
-    #         result = pd.DataFrame()
-    #         for category in similar_products['categoryName'].unique():
-    #             cat_products = similar_products[
-    #                 similar_products['categoryName'] == category
-    #             ]
-    #             if not cat_products.empty:
-    #                 result = pd.concat([
-    #                     result,
-    #                     cat_products.nlargest(2, 'final_score')
-    #                 ])
-            
-    #         return result.nlargest(n, 'final_score')[[
-    #             'title', 'categoryName', 'price', 'stars', 'reviews',
-    #             'img_url', 'product_url', 'final_score'
-    #         ]]
-            
-    #     except Exception as e:
-    #         print(f"Erreur dans get_similar_products: {str(e)}")
-    #         return pd.DataFrame()
 
     def get_similar_products(self, product_id, n=5):
         try:
-            original = self.product_data.loc[product_id]
+            # Vérifier si le product_id existe dans les données
+            if product_id not in self.product_data['asin'].values:
+                print(f"Product ID {product_id} not found in data")
+                return pd.DataFrame()
+                
+            # Obtenir le produit original
+            original = self.product_data[self.product_data['asin'] == product_id].iloc[0]
             
-            # Filtrage initial pour garder uniquement la même catégorie
+            # Filtrage initial
             similar_products = self.product_data[
-                (self.product_data.index != product_id) &
+                (self.product_data['asin'] != product_id) &
                 (self.product_data['categoryName'] == original['categoryName']) &
                 (self.product_data['reviews'] > 1000) &
                 (self.product_data['stars'] >= 4.0) &
-                (self.product_data['price'] >= original['price'] * 0.5) &  # Prix similaire
-                (self.product_data['price'] <= original['price'] * 2.0) &
-                (~self.product_data['title'].str.lower().str.contains(original['title'].lower().split('|')[0].strip()))
+                (self.product_data['price'] >= original['price'] * 0.5) &
+                (self.product_data['price'] <= original['price'] * 2.0)
             ].copy()
+
+            if len(similar_products) == 0:
+                print(f"No similar products found for {product_id}")
+                return pd.DataFrame()
 
             # Extraction de la marque
             similar_products['brand'] = similar_products['title'].str.extract(r'^([A-Za-z]+)')
@@ -169,26 +122,25 @@ class AmazonRecommender:
                 np.log1p(similar_products['reviews'].max())) * 0.3
             ).clip(0, 1)
             
-            # Sélection des meilleurs produits avec diversité de marques
-            result = pd.DataFrame()
-            used_brands = set()
+            # Sélection des meilleurs produits
+            result = similar_products.nlargest(n, 'final_score')
             
-            for _, product in similar_products.sort_values('final_score', ascending=False).iterrows():
-                if len(result) >= n:
-                    break
+            # Assurez-vous que toutes les colonnes requises sont présentes
+            required_columns = [
+                'asin', 'title', 'categoryName', 'price', 'stars', 
+                'reviews', 'img_url', 'product_url', 'final_score'
+            ]
+            
+            missing_columns = [col for col in required_columns if col not in result.columns]
+            if missing_columns:
+                print(f"Missing columns in result: {missing_columns}")
                 
-                # Ne pas prendre plus d'un produit de la même marque
-                if product['brand'] not in used_brands:
-                    result = pd.concat([result, pd.DataFrame([product])])
-                    used_brands.add(product['brand'])
-
-            return result[[
-                'title', 'categoryName', 'price', 'stars', 'reviews',
-                'img_url', 'product_url', 'final_score'
-            ]]
-            
+            return result[required_columns]
+                
         except Exception as e:
             print(f"Erreur dans get_similar_products: {str(e)}")
+            print(f"Product ID: {product_id}")
+            print(f"Available columns: {self.product_data.columns.tolist()}")
             return pd.DataFrame()
     
     def get_category_recommendations(self, category, n=5):
@@ -286,7 +238,7 @@ class AmazonRecommender:
                     used_categories.add(product['categoryName'])
             
             final_results = result[
-                ['title', 'categoryName', 'price', 'stars', 'reviews', 
+                ['asin','title', 'categoryName', 'price', 'stars', 'reviews', 
                 'img_url', 'product_url', 'final_score']
             ]
             
@@ -295,6 +247,7 @@ class AmazonRecommender:
             
         except Exception as e:
             print(f"Error in get_personalized_recommendations: {str(e)}")
+            print(f"Available columns: {list(result.columns)}")  # Debug
             return pd.DataFrame()
     
     def fit(self, df, verbose=True):
@@ -303,20 +256,24 @@ class AmazonRecommender:
         """
         if verbose:
             print("Creating features...")
-            
-        self.product_data = df
-        self.create_product_features(df)
+        
+        # Garder une copie des données originales SANS définir d'index
+        self.product_data = df.copy()
+        
+        # Créer les features pour le KNN
+        feature_df = self.create_product_features(df)
         
         if verbose:
             print("Training the KNN model...")
-            
+            print(f"Available columns: {self.product_data.columns.tolist()}")
+        
         self.knn_model = NearestNeighbors(
             n_neighbors=50,
             metric='cosine',
             algorithm='brute',
             n_jobs=-1
         )
-        self.knn_model.fit(self.product_features)
+        self.knn_model.fit(feature_df)
         
         if verbose:
             print("Training completed!")

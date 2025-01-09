@@ -41,7 +41,6 @@ def get_popular_products():
     try:
         limit = request.args.get('limit', default=10, type=int)
         min_rating = request.args.get('min_rating', default=4.0, type=float)
-        
         # Configuration des préférences par défaut
         user_prefs = {
             'categories': list(db.recommender.product_data['categoryName'].unique()),  # toutes les catégories
@@ -56,7 +55,11 @@ def get_popular_products():
             return jsonify({"error": "No products found"}), 404
             
         # Convertir le DataFrame en dictionnaire
+        result = result.reset_index()
         products = result.to_dict('records')
+
+        print("Debug - First product structure:")
+        print(products[0] if products else "No products")
         
         return jsonify({
             "count": len(products),
@@ -78,7 +81,10 @@ def get_product_recommendations(asin):
         if recommendations.empty:
             return jsonify({"error": "No recommendations found"}), 404
             
+        # S'assurer que l'index (ASIN) est inclus dans les données
+        recommendations = recommendations.reset_index()  # Ceci va inclure l'index (ASIN) comme colonne
         products = recommendations.to_dict('records')
+        
         return jsonify({
             "asin": asin,
             "recommendations": products,

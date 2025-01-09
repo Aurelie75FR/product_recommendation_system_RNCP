@@ -79,11 +79,10 @@ class BigQueryClient:
             raise
 
     def _init_recommender(self):
-        """Initialize recommender system with required columns"""
         try:
             query = f"""
             SELECT 
-                p.asin,
+                p.asin,  # Assurez-vous que l'ASIN est sélectionné
                 p.title,
                 p.img_url,
                 p.product_url,
@@ -102,11 +101,8 @@ class BigQueryClient:
             
             # Convertir en DataFrame
             df = pd.DataFrame([dict(row) for row in result])
-            df.set_index('asin', inplace=True)
+            print(f"Data columns available: {df.columns.tolist()}")
             
-            print(f"Loaded {len(df)} products with columns: {df.columns.tolist()}")
-            
-            # Entraîner le modèle
             self.recommender.fit(df)
             logger.info("Recommender model initialized successfully")
             
@@ -117,17 +113,25 @@ class BigQueryClient:
     def get_popular_products(self, limit=10):
         """Récupère les produits les plus populaires"""
         # Utiliser les préférences par défaut pour obtenir des recommandations diversifiées
-        user_prefs = {
-            'categories': self.recommender.product_data['categoryName'].unique(),
-            'min_price': 0,
-            'max_price': float('inf'),
-            'min_rating': 4.0
-        }
-        recommendations = self.recommender.get_personalized_recommendations(
-            user_prefs, 
-            n=limit
-        )
-        return recommendations.reset_index()
+        # user_prefs = {
+        #     'categories': self.recommender.product_data['categoryName'].unique(),
+        #     'min_price': 0,
+        #     'max_price': float('inf'),
+        #     'min_rating': 4.0
+        # }
+        # recommendations = self.recommender.get_personalized_recommendations(
+        #     user_prefs, 
+        #     n=limit
+        # )
+        # return recommendations.reset_index()
+        try:
+            recommendations = self.recommender.get_personalized_recommendations(user_prefs, n=limit)
+            print(f"Debug - Recommendations columns: {recommendations.columns}")
+            print(f"Debug - First recommendation:\n{recommendations.iloc[0]}")
+            return recommendations.reset_index()  # S'assurer que l'ASIN est inclus
+        except Exception as e:
+            print(f"Error in get_popular_products: {str(e)}")
+            raise
 
     def get_similar_products(self, asin, limit=5):
         """Trouve des produits similaires"""
