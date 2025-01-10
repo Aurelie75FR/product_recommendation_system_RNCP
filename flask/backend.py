@@ -110,33 +110,42 @@ class BigQueryClient:
             logger.error(f"Error initializing recommender: {str(e)}")
             raise
 
-    def get_popular_products(self, limit=10):
-        """Récupère les produits les plus populaires"""
-        # Utiliser les préférences par défaut pour obtenir des recommandations diversifiées
-        # user_prefs = {
-        #     'categories': self.recommender.product_data['categoryName'].unique(),
-        #     'min_price': 0,
-        #     'max_price': float('inf'),
-        #     'min_rating': 4.0
-        # }
-        # recommendations = self.recommender.get_personalized_recommendations(
-        #     user_prefs, 
-        #     n=limit
-        # )
-        # return recommendations.reset_index()
+    def get_popular_products(self, limit=10, category=None, sort_by=None):
+        """Récupère les produits les plus populaires avec filtres"""
         try:
-            recommendations = self.recommender.get_personalized_recommendations(user_prefs, n=limit)
-            print(f"Debug - Recommendations columns: {recommendations.columns}")
-            print(f"Debug - First recommendation:\n{recommendations.iloc[0]}")
-            return recommendations.reset_index()  # S'assurer que l'ASIN est inclus
+            # Définir les préférences de base
+            user_prefs = {
+                'categories': [category] if category and category != "All categories" 
+                            else list(self.recommender.product_data['categoryName'].unique()),
+                'min_price': 0,
+                'max_price': float('inf'),
+                'min_rating': 4.0
+            }
+            
+            # Forcer le mode tri si sort_by est spécifié
+            force_sort = sort_by in ["Price: Low to High", "Price: High to Low"]
+            
+            print(f"Debug - Category: {category}")
+            print(f"Debug - Sort by: {sort_by}")
+            print(f"Debug - Force sort: {force_sort}")
+            
+            recommendations = self.recommender.get_personalized_recommendations(
+                user_prefs, 
+                n=limit,
+                sort_by=sort_by,
+                force_sort=force_sort  # Nouveau paramètre
+            )
+            
+            return recommendations
+            
         except Exception as e:
-            print(f"Error in get_popular_products: {str(e)}")
+            logger.error(f"Error in get_popular_products: {str(e)}")
             raise
 
     def get_similar_products(self, asin, limit=5):
         """Trouve des produits similaires"""
         recommendations = self.recommender.get_similar_products(asin, n=limit)
-        return recommendations.reset_index()
+        return recommendations .reset_index()
 
     def get_category_recommendations(self, category_id, limit=5):
         """Récupère les recommandations par catégorie"""

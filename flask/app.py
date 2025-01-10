@@ -37,30 +37,31 @@ def health_check():
 
 @app.route('/api/products/popular', methods=['GET'])
 def get_popular_products():
-    """Récupère les produits les plus populaires"""
     try:
         limit = request.args.get('limit', default=10, type=int)
-        min_rating = request.args.get('min_rating', default=4.0, type=float)
-        # Configuration des préférences par défaut
+        category = request.args.get('category', default=None, type=str)
+        sort_by = request.args.get('sort_by', default=None, type=str)
+        
+        print(f"Received request - Category: {category}, Sort by: {sort_by}")
+        
         user_prefs = {
-            'categories': list(db.recommender.product_data['categoryName'].unique()),  # toutes les catégories
-            'min_price': 0,
+            'categories': [category] if category and category != "All categories" 
+                         else db.recommender.product_data['categoryName'].unique(),
+            'min_price': 0.5,
             'max_price': float('inf'),
-            'min_rating': min_rating
+            'min_rating': 4.0
         }
-
-        result = db.recommender.get_personalized_recommendations(user_prefs, n=limit)
+        
+        result = db.recommender.get_personalized_recommendations(
+            user_prefs,
+            n=limit,
+            sort_by=sort_by
+        )
         
         if result.empty:
             return jsonify({"error": "No products found"}), 404
             
-        # Convertir le DataFrame en dictionnaire
-        result = result.reset_index()
         products = result.to_dict('records')
-
-        print("Debug - First product structure:")
-        print(products[0] if products else "No products")
-        
         return jsonify({
             "count": len(products),
             "products": products
@@ -169,6 +170,19 @@ def search_products():
         
     except Exception as e:
         logger.error(f"Error in search_products: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    
+@app.route('/api/categories', methods=['GET'])
+def get_categories():
+    """Récupère toutes les catégories disponibles"""
+    try:
+        categories = sorted(db.recommender.product_data['categoryName'].unique().tolist())
+        return jsonify({
+            "categories": categories,
+            "count": len(categories)
+        }), 200
+    except Exception as e:
+        logger.error(f"Error fetching categories: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

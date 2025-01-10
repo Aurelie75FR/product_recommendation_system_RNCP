@@ -165,12 +165,11 @@ class AmazonRecommender:
             'title', 'categoryName', 'price', 'stars', 'value_score'
         ]]
     
-    def get_personalized_recommendations(self, user_prefs, n=5):
-        """Recommandations personnalisées avec diversité améliorée"""
-        print("Starting personalized recommendations...")
-        
+    
+    def get_personalized_recommendations(self, user_prefs, n=5, sort_by=None, force_sort=False):
+        """Recommandations personnalisées avec diversité et tri par prix"""
         try:
-            # Première étape : filtrage de base
+            # Filtrage initial
             mask = (
                 self.product_data['categoryName'].isin(user_prefs['categories']) &
                 (self.product_data['price'] >= user_prefs['min_price']) &
@@ -178,78 +177,58 @@ class AmazonRecommender:
                 (self.product_data['stars'] >= user_prefs['min_rating']) &
                 (self.product_data['reviews'] > 1000)
             )
-            print(f"Filtered products count: {mask.sum()}")
             
             candidates = self.product_data[mask].copy()
+            
             if len(candidates) == 0:
-                print("No candidates found!")
+                print("No products found matching the criteria")
                 return pd.DataFrame()
+
+            # Si force_sort est True ou si on a une catégorie spécifique, appliquer le tri directement
+            if force_sort:
+                if sort_by == "Price: Low to High":
+                    print("Sorting by price: low to high")
+                    return candidates.sort_values('price', ascending=True).head(n)
+                elif sort_by == "Price: High to Low":
+                    print("Sorting by price: high to low")
+                    return candidates.sort_values('price', ascending=False).head(n)
+
+            # Pour All categories sans tri forcé, assurer la diversité
+            print("Applying diversity logic")
             
-            print(f"Processing {len(candidates)} candidates...")
-            
-            # Pré-calcul des normalisations
-            max_price = candidates['price'].max()
-            max_reviews_log = np.log1p(candidates['reviews']).max()
-            
-            # Score de base
-            candidates['pref_score'] = (
+            # Calculer le score pour tous les produits
+            candidates['score'] = (
                 candidates['stars'] / 5 * 0.4 +
-                (1 - candidates['price'] / max_price) * 0.3 +
-                (np.log1p(candidates['reviews']) / max_reviews_log) * 0.3
+                (np.log1p(candidates['reviews']) / 
+                np.log1p(candidates['reviews'].max())) * 0.6
             )
             
-            # Sélection des meilleurs produits
-            top_candidates = candidates.nlargest(1000, 'pref_score')
+            # Sélectionner les meilleures catégories
+            top_categories = candidates['categoryName'].value_counts().head(6).index
             
-            # Extraction de la marque
-            top_candidates['brand'] = top_candidates['title'].str.extract(r'^([A-Za-z]+)')
-            print(f"Processing top candidates with unique brands: {top_candidates['brand'].nunique()}")
+            # Sélectionner les meilleurs produits de chaque catégorie
+            diverse_products = pd.DataFrame()
+            products_per_category = max(1, n // len(top_categories))
             
-            # Score de diversité de catégorie
-            top_candidates['category_count'] = top_candidates.groupby('categoryName')['pref_score'].transform('count')
-            top_candidates['category_diversity'] = 1 / np.log1p(top_candidates['category_count'])
+            for category in top_categories:
+                cat_products = candidates[candidates['categoryName'] == category]
+                if not cat_products.empty:
+                    cat_selection = cat_products.nlargest(products_per_category, 'score')
+                    diverse_products = pd.concat([diverse_products, cat_selection])
             
-            # Score de diversité de prix
-            price_ranges = pd.qcut(top_candidates['price'], q=5, labels=False)
-            price_range_counts = price_ranges.value_counts()
-            top_candidates['price_diversity'] = 1 / np.log1p(price_range_counts[price_ranges].values)
+            # Si on a un tri spécifié, l'appliquer sur les produits diversifiés
+            if sort_by:
+                if sort_by == "Price: Low to High":
+                    diverse_products = diverse_products.sort_values('price', ascending=True)
+                elif sort_by == "Price: High to Low":
+                    diverse_products = diverse_products.sort_values('price', ascending=False)
             
-            # Score final avec diversité
-            top_candidates['final_score'] = (
-                top_candidates['pref_score'] * 0.5 +
-                top_candidates['category_diversity'] * 0.3 +
-                top_candidates['price_diversity'] * 0.2
-            )
-            
-            # Sélection finale avec diversité de marques et catégories
-            result = pd.DataFrame()
-            used_categories = set()
-            
-            # Trier par score final
-            sorted_candidates = top_candidates.sort_values('final_score', ascending=False)
-            
-            for _, product in sorted_candidates.iterrows():
-                if len(result) >= n:
-                    break
-                    
-                # Vérifier si la catégorie est déjà utilisée
-                if product['categoryName'] not in used_categories:
-                    result = pd.concat([result, pd.DataFrame([product])])
-                    used_categories.add(product['categoryName'])
-            
-            final_results = result[
-                ['asin','title', 'categoryName', 'price', 'stars', 'reviews', 
-                'img_url', 'product_url', 'final_score']
-            ]
-            
-            print(f"Final results count: {len(final_results)}")
-            return final_results
-            
+            return diverse_products.head(n)
+                
         except Exception as e:
             print(f"Error in get_personalized_recommendations: {str(e)}")
-            print(f"Available columns: {list(result.columns)}")  # Debug
             return pd.DataFrame()
-    
+
     def fit(self, df, verbose=True):
         """
         Drives the recommendation system

@@ -122,11 +122,23 @@ def show_product_detail(product):
 if st.session_state.current_page == 'main':
     st.title("🛍️ Recommendation system with Amazon products")
     
-    # Search bar
-    search_query = st.text_input("🔍 Product search", "")
-    
-    # Sidebar filters
+    # Sidebar - Categories and Sorting
     st.sidebar.write("Filters")
+    
+    # Category selection
+    categories = ["All categories"] + st.session_state.api.get_categories()
+    selected_category = st.sidebar.selectbox(
+        "Select category",
+        categories
+    )
+    
+    # Price sorting
+    sort_order = st.sidebar.radio(
+        "Sort by price",
+        ["None", "Price: Low to High", "Price: High to Low"]
+    )
+    
+    # Existing price range filter
     price_range = st.sidebar.slider(
         "Price range (£)",
         min_value=0.0,
@@ -144,29 +156,49 @@ if st.session_state.current_page == 'main':
         0, 1000000, 100
     )
     
+    # Search bar
+    search_query = st.text_input("🔍 Product search", "")
+    
     # Get and display products
     try:
         if search_query:
             products = st.session_state.api.search_products(
                 query=search_query,
+                category=selected_category if selected_category != "All categories" else None,
                 limit=30
             )
             st.write(f"Results for '{search_query}': {len(products)} products")
         else:
-            products = st.session_state.api.get_popular_products(limit=30)
-            st.write("Most popular products:")
+            products = st.session_state.api.get_popular_products(
+                limit=30,
+                category=selected_category,
+                sort_by=sort_order
+            )
 
         if products:
-            st.markdown(product_container_style, unsafe_allow_html=True)
-            cols = st.columns(3)
+            # Filtrer les produits selon les critères
+            filtered_products = [
+                product for product in products
+                if (price_range[0] <= product['price'] <= price_range[1] and
+                    product['stars'] >= min_rating and
+                    product['reviews'] >= min_reviews and
+                    (selected_category == "All categories" or 
+                     product['categoryName'] == selected_category))
+            ]
             
-            for idx, product in enumerate(products):
-                if (price_range[0] <= product['price'] <= price_range[1] and 
-                    product['stars'] >= min_rating and 
-                    product['reviews'] >= min_reviews):
-                    
-                    col_idx = idx % 3
-                    with cols[col_idx]:
+            # Trier les produits si nécessaire
+            if sort_order == "Price: Low to High":
+                filtered_products = sorted(filtered_products, key=lambda x: x['price'])
+            elif sort_order == "Price: High to Low":
+                filtered_products = sorted(filtered_products, key=lambda x: x['price'], reverse=True)
+            
+            st.markdown(product_container_style, unsafe_allow_html=True)
+            
+            # Afficher les produits filtrés et triés
+            if filtered_products:
+                cols = st.columns(3)
+                for idx, product in enumerate(filtered_products):
+                    with cols[idx % 3]:
                         st.markdown("""
                             <div class="product-card">
                                 <div class="product-image">
@@ -190,12 +222,13 @@ if st.session_state.current_page == 'main':
                                 st.session_state.selected_product = product
                                 st.session_state.current_page = 'detail'
                                 st.rerun()
+            else:
+                st.warning("No products found matching your criteria.")
         else:
-            st.warning("No products found matching your criteria.")
+            st.warning("No products found.")
             
     except Exception as e:
         st.error(f"Error loading products: {str(e)}")
-
 # Product detail page
 elif st.session_state.current_page == 'detail' and st.session_state.selected_product is not None:
     show_product_detail(st.session_state.selected_product)
