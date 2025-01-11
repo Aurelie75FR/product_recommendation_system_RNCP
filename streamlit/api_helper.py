@@ -91,3 +91,26 @@ class APIHelper:
         except Exception as e:
             print(f"Error fetching categories: {str(e)}")
             return []
+        
+    def search_products(self, query, category=None, sort_by=None, limit=30):
+        """Search products with filters"""
+        try:
+            params = {
+                "q": query,
+                "limit": limit
+            }
+            if category and category != "All categories":
+                params["category"] = category
+            if sort_by and sort_by != "None":
+                params["sort_by"] = sort_by
+                
+            print(f"Searching with params: {params}")
+            response = requests.get(f"{self._base_url}/api/products/search", params=params)
+            
+            if response.status_code == 200:
+                return [self.__normalize_product(p) for p in response.json()["products"]]
+            print(f"Search failed with status: {response.status_code}")
+            return []
+        except Exception as e:
+            print(f"Error searching products: {str(e)}")
+            return []

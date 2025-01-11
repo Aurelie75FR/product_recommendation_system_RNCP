@@ -119,53 +119,115 @@ def get_category_recommendations(category_id):
 
 @app.route('/api/products/search', methods=['GET'])
 def search_products():
-    """Recherche de produits avec recommandations personnalisées"""
+    """Recherche de produits par titre avec gestion améliorée des correspondances"""
     try:
-        query = request.args.get('q', '')
-        category = request.args.get('category', '')
-        min_price = request.args.get('min_price', default=0, type=float)
-        max_price = request.args.get('max_price', default=float('inf'), type=float)
+        query = request.args.get('q', '').strip()
+        category = request.args.get('category', default=None, type=str)
+        sort_by = request.args.get('sort_by', default=None, type=str)
         min_rating = request.args.get('min_rating', default=4.0, type=float)
-        limit = request.args.get('limit', default=10, type=int)
+        min_price = request.args.get('min_price', default=0.0, type=float)
+        max_price = request.args.get('max_price', default=float('inf'), type=float)
+        min_reviews = request.args.get('min_reviews', default=100, type=int)
+        limit = request.args.get('limit', default=30, type=int)
         
-        if not query and not category:
-            return jsonify({"error": "Search query or category required"}), 400
-            
-        # Filtrer les produits selon les critères
-        mask = pd.Series(True, index=db.recommender.product_data.index)
+        print(f"Search params: query='{query}', category={category}, sort_by={sort_by}")
+
+        # Préparation des données
+        data = db.recommender.product_data.copy()
         
-        if query:
-            mask &= db.recommender.product_data['title'].str.contains(query, case=False)
-        if category:
-            mask &= db.recommender.product_data['categoryName'] == category
-            
-        user_prefs = {
-            'categories': [category] if category else db.recommender.product_data['categoryName'].unique(),
-            'min_price': min_price,
-            'max_price': max_price,
-            'min_rating': min_rating
+        # Normalisation de la requête et création de variations
+        query_variations = set()
+        query_lower = query.lower()
+        query_variations.add(query_lower)
+        
+        # Ajout des variations communes
+        replacements = {
+            'playstation': 'ps',
+            'ps5': 'playstation 5',
+            'ps4': 'playstation 4',
+            'ps3': 'playstation 3'
         }
         
-        filtered_data = db.recommender.product_data[mask].copy()
+        for old, new in replacements.items():
+            if old in query_lower:
+                query_variations.add(query_lower.replace(old, new))
+            if new in query_lower:
+                query_variations.add(query_lower.replace(new, old))
         
-        if filtered_data.empty:
-            return jsonify({"error": "No products found"}), 404
-            
-        # Calculer les scores pour le tri
-        filtered_data['search_score'] = (
-            filtered_data['stars'] / 5 * 0.4 +
-            (np.log1p(filtered_data['reviews']) / 
-             np.log1p(filtered_data['reviews'].max())) * 0.6
+        # Calcul des scores
+        data['search_score'] = 0.0
+        
+        # 1. Correspondance exacte du titre complet
+        exact_matches = data['title'].str.lower().isin([q for q in query_variations])
+        data.loc[exact_matches, 'search_score'] += 100.0
+        
+        # 2. Correspondance du début du titre
+        for q in query_variations:
+            starts_with = data['title'].str.lower().str.startswith(q)
+            data.loc[starts_with, 'search_score'] += 50.0
+        
+        # 3. Correspondances de mots exacts
+        for q in query_variations:
+            words = q.split()
+            for word in words:
+                if len(word) >= 2:  # Ignorer les mots trop courts
+                    word_match = data['title'].str.lower().str.contains(
+                        fr'\b{word}\b',
+                        regex=True,
+                        na=False
+                    )
+                    data.loc[word_match, 'search_score'] += 10.0
+        
+        # Filtrer les résultats avec un score positif
+        results = data[data['search_score'] > 0].copy()
+        
+        # Appliquer les filtres
+        mask = (
+            (results['price'] >= min_price) &
+            (results['price'] <= max_price) &
+            (results['stars'] >= min_rating) &
+            (results['reviews'] >= min_reviews)
         )
         
-        results = filtered_data.nlargest(limit, 'search_score')
-        products = results.to_dict('records')
+        if category and category != "All categories":
+            mask &= results['categoryName'] == category
+            
+        results = results[mask]
+        
+        if len(results) == 0:
+            return jsonify({
+                "query": query,
+                "count": 0,
+                "products": []
+            }), 200
+        
+        # Score final combinant pertinence et popularité
+        results['final_score'] = (
+            results['search_score'] * 0.7 +
+            (results['stars'] / 5) * 15 +
+            (np.log1p(results['reviews']) / np.log1p(results['reviews'].max())) * 15
+        )
+        
+        # Tri des résultats
+        if sort_by == "Price: Low to High":
+            sorted_results = results.sort_values(['price', 'final_score'], 
+                                              ascending=[True, False])
+        elif sort_by == "Price: High to Low":
+            sorted_results = results.sort_values(['price', 'final_score'], 
+                                              ascending=[False, False])
+        else:
+            sorted_results = results.sort_values('final_score', ascending=False)
+        
+        final_results = sorted_results.head(limit)
+        
+        print(f"Found {len(final_results)} results after filtering and sorting")
+        
+        products = final_results.to_dict('records')
         
         return jsonify({
             "query": query,
-            "category": category,
-            "products": products,
-            "count": len(products)
+            "count": len(products),
+            "products": products
         }), 200
         
     except Exception as e:
