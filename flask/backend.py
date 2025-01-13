@@ -82,7 +82,7 @@ class BigQueryClient:
         try:
             query = f"""
             SELECT 
-                p.asin,  # Assurez-vous que l'ASIN est sélectionné
+                p.asin,  
                 p.title,
                 p.img_url,
                 p.product_url,
